@@ -96,7 +96,7 @@ exports.getIterations = function (url, searchTerms) {
   return ids;
 };
 
-exports.getParams = function (url, searchTerms) {
+getParams = function (url, searchTerms) {
   var q = { 'query': { 'bool': { 'filter': [] }},
       '_source': "param",
             'size': 1000 };
@@ -118,6 +118,7 @@ exports.getParams = function (url, searchTerms) {
   }
   return params;
 };
+exports.getParams = getParams;
 
 exports.getSamples = function (url, searchTerms) {
   var q = { 'query': { 'bool': { 'filter': [] }},
@@ -306,6 +307,62 @@ exports.getRunData = function (url, searchTerms) {
   var resp = esRequest(url, "run/_doc/_search", q);
   var data = JSON.parse(resp.getBody());
   return data;
+};
+
+exports.getItersFromParams = function (url, runIds, searchTerms) {
+  var q = { 'query': { 'bool': { 'filter': [] }},
+            'aggs': { 'source': { 'terms': { 'field': 'iteration.id', 'size': 10000}}},
+            // it's possible to have multiple run docs with same ID, so use aggregation
+            'size': 1 };
+  if (runIds != undefined) {
+    q.query.bool.filter.push({"terms": {"run.id": runIds}});
+  }
+  searchTerms.forEach(element => {
+    var myTerm = {};
+    myTerm[element.term] = element.value;
+    q.query.bool.filter.push({"term": myTerm});
+  });
+  //console.log("query: " + JSON.stringify(q, null, 2));
+  var resp = esRequest(url, "param/_doc/_search", q);
+  var data = JSON.parse(resp.getBody());
+  //console.log(JSON.stringify(data, null, 2));
+  var ids = [];
+  if (Array.isArray(data.aggregations.source.buckets) && data.aggregations.source.buckets.length > 0) {
+    data.aggregations.source.buckets.forEach(element => {
+      ids.push(element.key);
+    });
+    return ids;
+  }
+};
+
+exports.getRunsFromTags = function (url, tags) {
+  //console.log("tags: " + JSON.stringify(tags, null, 2));
+  var q = { 'query': { 'bool': { 'filter': [] }},
+            'aggs': { 'source': { 'terms': { 'field': 'run.id', 'size': 10000, }}},
+            'size': 0 };
+  if (tags) {
+    var regExp = /([^:]+):([^:]+)/;
+    tags.forEach(tag => {
+      var matches = regExp.exec(tag);
+      if (matches) {
+        field = matches[1];
+        value = matches[2];
+        q.query.bool.filter.push({"term": {"tag.name": field}});
+        q.query.bool.filter.push({"term": {"tag.val": value}});
+      }
+    });
+  }
+  //console.log("request: " + JSON.stringify(q, null, 2));
+  var resp = esRequest(url, "tag/_doc/_search", q);
+  var data = JSON.parse(resp.getBody());
+  //console.log(JSON.stringify(data, null, 2));
+  var ids = [];
+  if (Array.isArray(data.aggregations.source.buckets) && data.aggregations.source.buckets.length > 0) {
+    data.aggregations.source.buckets.forEach(element => {
+      ids.push(element.key);
+    });
+    return ids;
+  }
 };
 
 exports.getRuns = function (url, searchTerms) {
