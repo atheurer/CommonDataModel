@@ -51,6 +51,15 @@ getMetricDescs = function (url, runId) {
 };
 exports.getMetricDescs = getMetricDescs;
 
+getMetricDescDocs = function (url, metricId) {
+  var q = { 'query': { 'bool': { 'filter': [ {"term": {"metric_desc.id": metricId}} ] }},
+            'size': 10000 };
+  var resp = esRequest(url, "metric_desc/_doc/_search", q);
+  var data = JSON.parse(resp.getBody());
+  return data;
+};
+exports.getMetricDescDocs = getMetricDescDocs;
+
 getMetricDataDocs = function (url, metricId) {
   var q = { 'query': { 'bool': { 'filter': [ {"term": {"metric_desc.id": metricId}} ] }},
             'size': 10000 };
@@ -68,7 +77,7 @@ deleteMetrics = function (url, runId) {
   ids.forEach(element => {
     var term = {"metric_desc.id": element };
     q['query']['bool']['filter']['terms']["metric_desc.id"].push(element);
-    if (q['query']['bool']['filter']['terms']["metric_desc.id"].length >= 5000) {
+    if (q['query']['bool']['filter']['terms']["metric_desc.id"].length >= 500) {
       console.log("deleting " + q['query']['bool']['filter']['terms']["metric_desc.id"].length + " metrics");
       deleteDocs(url, ['metric_data', 'metric_desc'], q);
       q['query']['bool']['filter']['terms']["metric_desc.id"] = [];
@@ -84,6 +93,13 @@ exports.deleteMetrics = deleteMetrics;
 exports.getIterationDoc = function (url, id) {
   var q = { 'query': { 'bool': { 'filter': [ { "term": { "iteration.id": id }} ] }}};
   var resp = esRequest(url, "iteration/_doc/_search", q);
+  var data = JSON.parse(resp.getBody());
+  return data;
+};
+
+exports.getSampleDoc = function (url, id) {
+  var q = { 'query': { 'bool': { 'filter': [ { "term": { "sample.id": id }} ] }}};
+  var resp = esRequest(url, "sample/_doc/_search", q);
   var data = JSON.parse(resp.getBody());
   return data;
 };
@@ -252,6 +268,13 @@ exports.getMetricTypes = function (url, runId, source) {
     });
     return types;
   }
+};
+
+exports.getDocCount = function (url, runId, docType) {
+  var q = { 'query': { 'bool': { 'filter': [ {"term": {"run.id": runId}} ] }}};
+  var resp = esRequest(url, docType + "/_doc/_count", q);
+  var data = JSON.parse(resp.getBody());
+  return data.count;
 };
 
 // For a specific metric-source and metric-type,
