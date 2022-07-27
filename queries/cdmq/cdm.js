@@ -1327,6 +1327,7 @@ mgetMetricIdsFromTerms = function (url, termsSets) {
         //console.log("mgetMetricIdsFromTerms():  adding " + data.responses[count].hits.hits[j]._source.metric_desc.id);
         thisMetricIds[label].push(data.responses[count].hits.hits[j]._source.metric_desc.id);
       }
+      console.log("thisMetricIds[" + label + "] (qty:" + thisMetricIds[label].length + "):\n" + JSON.stringify(thisMetricIds[label]));
       count++;
     });
     metricIdsSets.push(thisMetricIds);
