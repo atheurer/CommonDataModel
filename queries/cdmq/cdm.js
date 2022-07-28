@@ -1566,6 +1566,7 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
     });
   }
 
+  console.log("ndjson:\n" + ndjson);
 
   var resp = esRequest(url, "metric_data/_doc/_msearch", ndjson);
   var data = JSON.parse(resp.getBody());
