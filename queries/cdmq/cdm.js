@@ -1519,6 +1519,7 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
         // its end was after the time range.
         indexjson = '{"index": "' + getIndexBaseName() + 'metric_data' + '" }\n';
         reqjson  = '{';
+        reqjson += '  "size": ' + bigQuerySize + ',';
         reqjson += '  "query": {';
         reqjson += '    "bool": {';
         reqjson += '      "filter": [';
@@ -1538,6 +1539,7 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
         var indexjson = '{"index": "' + getIndexBaseName() + 'metric_data' + '" }\n';
         var reqjson = '';
         reqjson += '{';
+        reqjson += '  "size": ' + bigQuerySize + ',';
         reqjson += '  "query": {';
         reqjson += '    "bool": {';
         reqjson += '      "filter": [';
