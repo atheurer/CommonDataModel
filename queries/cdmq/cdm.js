@@ -1570,6 +1570,9 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
 
   var resp = esRequest(url, "metric_data/_doc/_msearch", ndjson);
   var data = JSON.parse(resp.getBody());
+
+  console.log("data:\n" + JSON.stringify(data, null, 2));
+
   var elements = data.responses.length;
 
   var valueSets = [];
