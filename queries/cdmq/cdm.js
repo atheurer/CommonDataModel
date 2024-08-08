@@ -1752,9 +1752,7 @@ exports.getMetricGroupsFromBreakout = getMetricGroupsFromBreakout;
 // then there are enough metric_data documents to compute the results.
 getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
   //console.log("metricGroupIdsByLabelSets:\n" + JSON.stringufy(metricGroupIdsByLabelSets, null, 2));
-  var maxndjson = 8 * 48; // Must be a multiple of 8
-  var ndjson = [];
-  var ndjsonLineNum = 0;
+  var ndjson = '';
   for (var idx = 0; idx < metricGroupIdsByLabelSets.length; idx++) {
     Object.keys(metricGroupIdsByLabelSets[idx])
       .sort()
@@ -1781,10 +1779,6 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
         // The resolution determines how many times we compute a value, each value for a
         // different "slice" in the original begin-to-end time domain.
         while (true) {
-          ndIdx = Math.floor(ndjsonLineNum / maxndjson);
-          if (typeof ndjson[ndIdx] == 'undefined') {
-            ndjson[ndIdx] = '';
-          }
           // Calculating a single value representing an average for thisBegin - thisEnd
           // relies on an [weighted average] aggregation, plus a few other queries.  An
           // alternative method would involve querying all documents for the orignal
@@ -1821,10 +1815,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}';
           var index = JSON.parse(indexjson);
           var req = JSON.parse(reqjson);
-          ndjson[ndIdx] += JSON.stringify(index) + '\n';
-          ndjsonLineNum++;
-          ndjson[ndIdx] += JSON.stringify(req) + '\n';
-          ndjsonLineNum++;
+          ndjson += JSON.stringify(index) + '\n';
+          ndjson += JSON.stringify(req) + '\n';
           // This second request is for the total weight of the previous weighted average request.
           // We need this because we are going to recompute the weighted average by adding
           // a few more documents that are partially outside the time domain.
@@ -1848,10 +1840,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}\n';
           index = JSON.parse(indexjson);
           req = JSON.parse(reqjson);
-          ndjson[ndIdx] += JSON.stringify(index) + '\n';
-          ndjsonLineNum++;
-          ndjson[ndIdx] += JSON.stringify(req) + '\n';
-          ndjsonLineNum++;
+          ndjson += JSON.stringify(index) + '\n';
+          ndjson += JSON.stringify(req) + '\n';
           // This third request is for documents that had its begin during or before the time range, but
           // its end was after the time range.
           indexjson = '{"index": "' + getIndexBaseName() + 'metric_data' + '" }\n';
@@ -1869,10 +1859,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}';
           index = JSON.parse(indexjson);
           req = JSON.parse(reqjson);
-          ndjson[ndIdx] += JSON.stringify(index) + '\n';
-          ndjsonLineNum++;
-          ndjson[ndIdx] += JSON.stringify(req) + '\n';
-          ndjsonLineNum++;
+          ndjson += JSON.stringify(index) + '\n';
+          ndjson += JSON.stringify(req) + '\n';
           // This fourth request is for documents that had its begin before the time range, but
           //  its end was during or after the time range
           var indexjson = '{"index": "' + getIndexBaseName() + 'metric_data' + '" }\n';
@@ -1891,10 +1879,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}\n';
           index = JSON.parse(indexjson);
           req = JSON.parse(reqjson);
-          ndjson[ndIdx] += JSON.stringify(index) + '\n'; //ensures JSON is exactly 1 line
-          ndjsonLineNum++;
-          ndjson[ndIdx] += JSON.stringify(req) + '\n'; //ensures JSON is exactly 1 line
-          ndjsonLineNum++;
+          ndjson += JSON.stringify(index) + '\n'; //ensures JSON is exactly 1 line
+          ndjson += JSON.stringify(req) + '\n'; //ensures JSON is exactly 1 line
 
           // Cycle through every "slice" of the time domain, adding the requests for the entire time domain
           thisBegin = thisEnd + 1;
@@ -1909,13 +1895,10 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
       });
   }
 
-  var responses = [];
-  for (idx = 0; idx < ndjson.length; idx++) {
-    var resp = esRequest(url, 'metric_data/_msearch', ndjson[idx]);
-    var data = JSON.parse(resp.getBody());
-    responses.push(...data['responses']);
-  }
-  var elements = responses.length;
+  var resp = esRequest(url, 'metric_data/_msearch', ndjson);
+  var data = JSON.parse(resp.getBody());
+  var elements = data.responses.length;
+
   var valueSets = [];
   var count = 0;
   for (var idx = 0; idx < metricGroupIdsByLabelSets.length; idx++) {
@@ -1935,7 +1918,7 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
         var thisBegin = begin;
         var thisEnd = begin + duration;
         var subCount = 0;
-        //var elements = responses.length / metricGroupIdsByLabelSets.length;
+        //var elements = data.responses.length / metricGroupIdsByLabelSets.length;
         var numMetricIds = metricIds.length;
         while (true) {
           var timeWindowDuration = thisEnd - thisBegin + 1;
@@ -1945,14 +1928,14 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           var aggWeight;
           var aggAvgTimesWeight;
           var newWeight;
-          aggAvg = responses[count].aggregations.metric_avg.value; //$$resp_ref{'responses'}[$count]{'aggregations'}{'metric_avg'}{'value'};
+          aggAvg = data.responses[count].aggregations.metric_avg.value; //$$resp_ref{'responses'}[$count]{'aggregations'}{'metric_avg'}{'value'};
           if (typeof aggAvg != 'undefined') {
             // We have the weighted average for documents that don't overlap the time range,
             // but we need to combine that with the documents that are partially outside
             // the time range.  We need to know the total weight from the documents we
             // just finished in order to add the new documents and recompute the new weighted
             // average.
-            aggWeight = responses[count + 1].aggregations.total_weight.value;
+            aggWeight = data.responses[count + 1].aggregations.total_weight.value;
             aggAvgTimesWeight = aggAvg * aggWeight;
           } else {
             // It is possible that the aggregation returned no results because all of the documents
@@ -1985,20 +1968,20 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           var k;
           for (k = 2; k < 4; k++) {
             //for my $j (@{ $$resp_ref{'responses'}[$count + $k]{'hits'}{'hits'} }) {
-            if (responses[count + k].hits.total.value !== responses[count + k].hits.hits.length) {
+            if (data.responses[count + k].hits.total.value !== data.responses[count + k].hits.hits.length) {
               console.log(
-                'WARNING! getMetricDataFromIdsSets() responses[' +
+                'WARNING! getMetricDataFromIdsSets() data.responses[' +
                   (count + k) +
                   '].hits.total.value (' +
-                  responses[count + k].hits.total.value +
-                  ') and responses[' +
+                  data.responses[count + k].hits.total.value +
+                  ') and data.responses[' +
                   (count + k) +
                   '].hits.hits.length (' +
-                  responses[count + k].hits.hits.length +
+                  data.responses[count + k].hits.hits.length +
                   ') are not equal, which means the retured data is probably incomplete'
               );
             }
-            responses[count + k].hits.hits.forEach((element) => {
+            data.responses[count + k].hits.hits.forEach((element) => {
               //for my $key (keys %{ $$j{'_source'}{'metric_data'} }) {
               partialDocs[element._id] = {};
               Object.keys(element._source.metric_data).forEach((key) => {
