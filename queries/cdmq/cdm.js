@@ -61,6 +61,63 @@ intersectAllArrays = function (a2D) {
 };
 exports.intersectAllArrays = intersectAllArrays;
 
+
+function esJsonArrRequest(host, idx, jsonArr) {
+  var url = 'http://' + host + '/' + getIndexBaseName() + idx;
+  var max = 4096;
+  var idx = 0;
+  var req_count = 0;
+  var q_count = 0;
+  var ndjson = "";
+  var responses = [];
+  // Process queries in chunks no larger than 'max' chars
+  //console.log("jsonArry.length: " + jsonArr.length);
+  while (idx < jsonArr.length) {
+    //console.log("idx: " + idx);
+    // Add two jsons/lines at a time, as the first json is the index and the second is the query
+    if ((ndjson.length + jsonArr[idx].length + jsonArr[idx+1].length) < max) {
+      q_count++;
+      ndjson += jsonArr[idx] + '\n' +jsonArr[idx+1] + '\n';
+      //console.log("adding <<<" + jsonArr[idx] + '\n' +jsonArr[idx+1] + '\n' + ">>> to ndjson\n");
+      idx += 2;
+    } else {
+      //console.log("idx: " + idx + "\nndjson:\n" + ndjson);
+      req_count++;
+      //console.log("request number " + req_count + " with " + q_count + " queries");
+      q_count = 0;
+      var resp = request('POST', url,
+        {
+          body: ndjson,
+          headers: { 'Content-Type': 'application/json' }
+        }
+        );
+      var data = JSON.parse(resp.getBody());
+      //console.log("responses (" + data.responses.length + "):\n" + JSON.stringify(data, null, 2));
+      //console.log("responses (" + data.responses.length + ")\n");
+      responses.push(...data.responses);
+      //console.log("responses (" + data.responses.length + "/" + responses.length + ")");
+      ndjson = "";
+    }
+  }
+  if (ndjson != "") {
+    //console.log("idx: " + idx + "\nndjson:\n" + ndjson);
+    req_count++;
+    //console.log("request number " + req_count + " with " + q_count + " queries");
+    q_count = 0;
+    var resp = request('POST', url,
+      {
+        body: ndjson,
+        headers: { 'Content-Type': 'application/json' }
+      }
+      );
+    var data = JSON.parse(resp.getBody());
+    responses.push(...data.responses);
+    //console.log("responses (" + data.responses.length + "/" + responses.length + ")");
+    ndjson = "";
+  }
+  return responses;
+}
+
 function esRequest(host, idx, q) {
   var url = 'http://' + host + '/' + getIndexBaseName() + idx;
   // The var q can be an object or a string.  If you are submitting NDJSON
@@ -85,7 +142,7 @@ function esRequest(host, idx, q) {
 mSearch = function (url, index, termKeys, values, source, aggs, size, sort) {
   if (typeof termKeys !== typeof []) return;
   if (typeof values !== typeof []) return;
-  var ndjson = '';
+  var jsonArr = [];
   for (var i = 0; i < values[0].length; i++) {
     var req = { query: { bool: { filter: [] } } };
     if (source !== '' && source !== null) {
@@ -107,59 +164,62 @@ mSearch = function (url, index, termKeys, values, source, aggs, size, sort) {
     if (aggs !== null) {
       req['aggs'] = aggs;
     }
-    ndjson += '{}\n' + JSON.stringify(req) + '\n';
+    jsonArr.push('{}');
+    //console.log("req: " + JSON.stringify(req));
+    jsonArr.push(JSON.stringify(req));
   }
-  var resp = esRequest(url, index + '/_msearch', ndjson);
-  var data = JSON.parse(resp.getBody());
+  //console.log("jsonArr:\n" + jsonArr);
+  var responses = esJsonArrRequest(url, index + '/_msearch', jsonArr);
+  //console.log("responses:\n" + JSON.stringify(responses, null, 2));
 
   // Unpack response and organize in array of arrays
   var retData = [];
-  for (var i = 0; i < data.responses.length; i++) {
+  for (var i = 0; i < responses.length; i++) {
     // For queries with aggregation
     if (
-      typeof data.responses[i].aggregations !== 'undefined' &&
-      Array.isArray(data.responses[i].aggregations.source.buckets)
+      typeof responses[i].aggregations !== 'undefined' &&
+      Array.isArray(responses[i].aggregations.source.buckets)
     ) {
-      if (data.responses[i].aggregations.source.sum_other_doc_count > 0) {
+      if (responses[i].aggregations.source.sum_other_doc_count > 0) {
         console.log(
           'WARNING! msearch aggregation returned sum_other_doc_count > 0, which means not all terms were returned.  This query needs a larger "size"'
         );
       }
       // Assemble the keys from the bucket for this query (i)
       var keys = [];
-      data.responses[i].aggregations.source.buckets.forEach((element) => {
+      responses[i].aggregations.source.buckets.forEach((element) => {
         keys.push(element.key);
       });
       retData[i] = keys;
 
       // For queries without aggregation
     } else {
-      if (data.responses[i].hits == null) {
+      if (responses[i].hits == null) {
         console.log('WARNING! msearch returned data.responses[' + i + '].hits is NULL');
-        console.log(JSON.stringify(data.responses[i], null, 2));
+        console.log(JSON.stringify(responses[i], null, 2));
         return;
       }
-      if (Array.isArray(data.responses[i].hits.hits) && data.responses[i].hits.hits.length > 0) {
+      if (Array.isArray(responses[i].hits.hits) && responses[i].hits.hits.length > 0) {
         if (
-          data.responses[i].hits.total.value !== data.responses[i].hits.hits.length &&
-          req.size != data.responses[i].hits.hits.length
+          responses[i].hits.total.value !== responses[i].hits.hits.length &&
+          req.size != responses[i].hits.hits.length
         ) {
           console.log(
             'WARNING! msearch(size: ' +
               size +
-              ') data.responses[' +
+              ') responses[' +
               i +
               '].hits.total.value (' +
-              data.responses[i].hits.total.value +
-              ') and data.responses[' +
+              responses[i].hits.total.value +
+              ') and responses[' +
               i +
               '].hits.hits.length (' +
-              data.responses[i].hits.hits.length +
+              responses[i].hits.hits.length +
               ') are not equal, which means the retured data is probably incomplete'
           );
         }
         var ids = [];
-        data.responses[i].hits.hits.forEach((element) => {
+        responses[i].hits.hits.forEach((element) => {
           // A source of "x.y" <string> must be converted to reference the object
           // For example, a source (string) of "metric_desc.id" needs to reference metric_desc[id]
           var obj = element._source;
@@ -1021,8 +1081,8 @@ getIters = function (
 
   const now = Date.now();
   var intersectedRunIds = [];
-  var ndjson = '';
-  var ndjson2 = '';
+  var jsonArr = [];
+  var jsonArr2 = '';
   var indexjson = '';
   var qjson = '';
   var newestDay = now - 1000 * 3600 * 24 * filterByAge.split('-')[0];
@@ -1053,20 +1113,19 @@ getIters = function (
     if (val != 'tag-not-used') {
       var tagValTerm = { term: { 'tag.val': val } };
       tag_query.query.bool.filter.push(tagValTerm);
-      ndjson += '{"index": "' + getIndexBaseName() + 'tag' + '" }\n';
-      ndjson += JSON.stringify(tag_query) + '\n';
+      jsonArr.push('{"index": "' + getIndexBaseName() + 'tag' + '" }');
+      jsonArr.push(JSON.stringify(tag_query));
     } else {
       // Find the run IDs which have this tag name present (value does not matter)
-      ndjson2 += '{"index": "' + getIndexBaseName() + 'tag' + '" }\n';
-      ndjson2 += JSON.stringify(tag_query) + '\n';
+      jsonArr2 += '{"index": "' + getIndexBaseName() + 'tag' + '" }\n';
+      jsonArr2 += JSON.stringify(tag_query) + '\n';
     }
   });
 
-  if (ndjson != '') {
-    var resp = esRequest(url, 'tag/_msearch', ndjson);
-    var data = JSON.parse(resp.getBody());
+  if (jsonArr.length > 0) {
+    var responses = esJsonArrRequest(url, 'tag/_msearch', jsonArr);
     var runIds = [];
-    data.responses.forEach((response) => {
+    responses.forEach((response) => {
       var theseRunIds = [];
       response.hits.hits.forEach((run) => {
         theseRunIds.push(run._source.run.id);
@@ -1075,10 +1134,9 @@ getIters = function (
     });
     var intersectedRunIds = intersectAllArrays(runIds);
 
-    if (ndjson2 != '') {
-      var resp2 = esRequest(url, 'tag/_msearch', ndjson2);
-      var data2 = JSON.parse(resp2.getBody());
-      data2.responses.forEach((response) => {
+    if (jsonArr2.length > 0) {
+      var responses2 = esJsonArrRequest(url, 'tag/_msearch', jsonArr2);
+      responses2.forEach((response) => {
         response.hits.hits.forEach((run) => {
           if (intersectedRunIds.includes(run._source.run.id)) {
             var index = intersectedRunIds.indexOf(run._source.run.id);
@@ -1106,7 +1164,7 @@ getIters = function (
   // The responses (a list of iteration.ids for each query) must be intersected
   // to have only the iteration.ids that match all param filters.
   console.log('Get all iterations from ' + filterByParams.length + ' param filters');
-  ndjson = '';
+  jsonArr = [];
   filterByParams.forEach((argval) => {
     var param_query = JSON.parse(base_q_json);
     var arg = argval.split(':')[0];
@@ -1117,22 +1175,22 @@ getIters = function (
     if (val != 'param-not-used') {
       var paramVal = { term: { 'param.val': val } };
       param_query.query.bool.filter.push(paramVal);
-      ndjson += '{"index": "' + getIndexBaseName() + 'param' + '" }\n';
-      ndjson += JSON.stringify(param_query) + '\n';
+      jsonArr.push('{"index": "' + getIndexBaseName() + 'param' + '" }');
+      jsonArr.push(JSON.stringify(param_query));
     } else {
       // Find the run IDs which have this param name present (value does not matter).
       // Later, we will subtract these iteration IDs from the ones found with ndjson query.
-      ndjson2 += '{"index": "' + getIndexBaseName() + 'param' + '" }\n';
-      ndjson2 += JSON.stringify(param_query) + '\n';
+      jsonArr2 += '{"index": "' + getIndexBaseName() + 'param' + '" }\n';
+      jsonArr2 += JSON.stringify(param_query) + '\n';
     }
   });
 
   var iterIdsFromParam = [];
-  if (ndjson != '') {
-    var resp = esRequest(url, 'param/_msearch', ndjson);
-    var data = JSON.parse(resp.getBody());
+  if (jsonArr.length > 0) {
+    var resp = esJsonArrRequest(url, 'param/_msearch', jsonArr);
+    var responses = JSON.parse(resp.getBody());
     var iterationIds = [];
-    data.responses.forEach((response) => {
+    responses.forEach((response) => {
       var theseIterationIds = [];
       response.hits.hits.forEach((iteration) => {
         theseIterationIds.push(iteration._source.iteration.id);
@@ -1141,10 +1199,10 @@ getIters = function (
     });
     iterIdsFromParam = intersectAllArrays(iterationIds);
 
-    if (ndjson2 != '') {
-      var resp2 = esRequest(url, 'tag/_msearch', ndjson2);
-      var data2 = JSON.parse(resp2.getBody());
-      data2.responses.forEach((response) => {
+    if (jsonArr2 != '') {
+      var resp2 = esJsonArrRequest(url, 'tag/_msearch', jsonArr2);
+      var responses2 = JSON.parse(resp2.getBody());
+      responses2.forEach((response) => {
         response.hits.hits.forEach((hit) => {
           if (iterIdsFromParam.includes(hit._source.iteration.id)) {
             var index = iterIdsFromParam.indexOf(hit._source.iteration.id);
@@ -1564,7 +1622,7 @@ mgetMetricIdsFromTerms = function (url, termsSets) {
   // { 'period': x, 'run': y, 'termsByLabel': {} }
   // termsByLabel is a dict/hash of:
   // { <label>: sring }
-  var ndjson = '';
+  var jsonArr = [];
   var totalReqs = 0;
   for (i = 0; i < termsSets.length; i++) {
     //console.log("mgetMetricIdsFromTerms():  termsSets[" + i + "]:\n" + JSON.stringify(termsSets[i], null, 2));
@@ -1590,19 +1648,19 @@ mgetMetricIdsFromTerms = function (url, termsSets) {
         if (runId != null) {
           q.query.bool.filter.push(JSON.parse('{"term": {"run.id": "' + runId + '"}}'));
         }
-        ndjson += '{}\n' + JSON.stringify(q) + '\n';
+        jsonArr.push('{}');
+        jsonArr.push(JSON.stringify(q));
         totalReqs++;
       });
   }
-  //console.log("mgetMetricIdsFromTerms(): ndjson:\n" + ndjson + "\n");
-  var resp = esRequest(url, 'metric_desc/_msearch', ndjson);
-  var data = JSON.parse(resp.getBody());
-  if (totalReqs != data.responses.length) {
-    console.log('mgetMetricIdsFromTerms(): ERROR, number of _msearch responses did not match number of requests');
+  console.log("jsonArr.length: " + jsonArr.length);
+  var responses = esJsonArrRequest(url, 'metric_desc/_msearch', jsonArr);
+  if (totalReqs != responses.length) {
+    console.log('mgetMetricIdsFromTerms(): ERROR, number of _msearch responses (' + responses.length + ') did not match number of requests (' + totalReqs + ')');
     return;
   }
-  if (data.responses == null) {
-    console.log('ERROR: data.responses is null');
+  if (responses == null) {
+    console.log('ERROR: responses is null');
     return;
   }
 
@@ -1620,33 +1678,33 @@ mgetMetricIdsFromTerms = function (url, termsSets) {
         //console.log("mgetMetricIdsFromTerms():  label: " + label);
         //console.log("mgetMetricIdsFromTerms():  count: " + count);
         thisMetricIds[label] = [];
-        if (data.responses[i] == null) {
-          console.log('ERROR: data.responses[' + i + '] is null');
-          console.log('data.responses.length:' + data.responses.length);
-          console.log('data.responses:\n' + JSON.stringify(data.responses, null, 2));
+        if (responses[i] == null) {
+          console.log('ERROR: responses[' + i + '] is null');
+          console.log('responses.length:' + responses.length);
+          console.log('responses:\n' + JSON.stringify(responses, null, 2));
           console.log('termsSets.length: ' + termsSets.length);
           console.log('totalReqs: ' + totalReqs);
-          console.log('query:\n' + ndjson);
+          console.log('query:\n' + jsonArr);
           process.exit(1);
         }
-        if (data.responses[i].hits == null) {
-          console.log('ERROR: data.responses[' + i + '].hits is null');
-          console.log('data.responses[' + i + ']:\n' + JSON.stringify(data.responses[i], null, 2));
+        if (responses[i].hits == null) {
+          console.log('ERROR: responses[' + i + '].hits is null');
+          console.log('responses[' + i + ']:\n' + JSON.stringify(responses[i], null, 2));
           console.log('termsSets.length: ' + termsSets.length);
           console.log('totalReqs: ' + totalReqs);
-          console.log('query:\n' + ndjson);
+          console.log('query:\n' + jsonArr);
           process.exit(1);
         }
-        if (data.responses[i].hits.total.value >= bigQuerySize || data.responses[i].hits.hits.length >= bigQuerySize) {
+        if (responses[i].hits.total.value >= bigQuerySize || responses[i].hits.hits.length >= bigQuerySize) {
           console.log('ERROR: hits from returned query exceeded max size of ' + bigQuerySize);
           process.exit(1);
         }
         //console.log("mgetMetricIdsFromTerms():  data.responses[" + count + "]:\n" + JSON.stringify(data.responses[count], null, 2));
         //console.log("mgetMetricIdsFromTerms():  data.responses[" + count + "].hits.hits.length: " + data.responses[count].hits.hits.length);
-        for (j = 0; j < data.responses[count].hits.hits.length; j++) {
+        for (j = 0; j < responses[count].hits.hits.length; j++) {
           //console.log("mgetMetricIdsFromTerms():  data.responses[" + count + "].hits.hits[" + j + "]:\n" + JSON.stringify(data.responses[count].hits.hits[j], null, 2));
           //console.log("mgetMetricIdsFromTerms():  adding " + data.responses[count].hits.hits[j]._source.metric_desc.id);
-          thisMetricIds[label].push(data.responses[count].hits.hits[j]._source.metric_desc.id);
+          thisMetricIds[label].push(responses[count].hits.hits[j]._source.metric_desc.id);
         }
         count++;
       });
@@ -1666,7 +1724,7 @@ getMetricGroupsFromBreakouts = function (url, sets) {
   var metricGroupIdsByLabel = [];
   var indexjson = '{}\n';
   var index = JSON.parse(indexjson);
-  var ndjson = '';
+  var jsonArr = [];
 
   sets.forEach((set) => {
     var result = getBreakoutAggregation(set.source, set.type, set.breakout);
@@ -1698,11 +1756,10 @@ getMetricGroupsFromBreakouts = function (url, sets) {
       }
     });
     q.aggs = aggs;
-    ndjson += JSON.stringify(index) + '\n';
-    ndjson += JSON.stringify(q) + '\n';
+    jsonArr.push(JSON.stringify(index));
+    jsonArr.push(JSON.stringify(q));
   });
-  var resp = esRequest(url, 'metric_desc/_msearch', ndjson);
-  var data = JSON.parse(resp.getBody());
+  var responses = esJsonArrRequest(url, 'metric_desc/_msearch', jsonArr);
 
   var metricGroupIdsByLabelSets = [];
   var metricGroupTermsSets = [];
@@ -1711,7 +1768,7 @@ getMetricGroupsFromBreakouts = function (url, sets) {
   for (var idx = 0; idx < sets.length; idx++) {
     // The response includes a result from a nested aggregation, which will be parsed to produce
     // query terms for each of the metric groups
-    var metricGroupTerms = getMetricGroupTermsFromAgg(data.responses[idx].aggregations);
+    var metricGroupTerms = getMetricGroupTermsFromAgg(responses[idx].aggregations);
     // Derive the label from each group and organize into a dict, key = label, value = the filter terms
     var metricGroupTermsByLabel = getMetricGroupTermsByLabel(metricGroupTerms);
     var thisLabelSet = {
@@ -1752,7 +1809,7 @@ exports.getMetricGroupsFromBreakout = getMetricGroupsFromBreakout;
 // then there are enough metric_data documents to compute the results.
 getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
   //console.log("metricGroupIdsByLabelSets:\n" + JSON.stringufy(metricGroupIdsByLabelSets, null, 2));
-  var ndjson = '';
+  var jsonArr = [];
   for (var idx = 0; idx < metricGroupIdsByLabelSets.length; idx++) {
     Object.keys(metricGroupIdsByLabelSets[idx])
       .sort()
@@ -1815,8 +1872,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}';
           var index = JSON.parse(indexjson);
           var req = JSON.parse(reqjson);
-          ndjson += JSON.stringify(index) + '\n';
-          ndjson += JSON.stringify(req) + '\n';
+          jsonArr.push(JSON.stringify(index));
+          jsonArr.push(JSON.stringify(req));
           // This second request is for the total weight of the previous weighted average request.
           // We need this because we are going to recompute the weighted average by adding
           // a few more documents that are partially outside the time domain.
@@ -1840,8 +1897,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}\n';
           index = JSON.parse(indexjson);
           req = JSON.parse(reqjson);
-          ndjson += JSON.stringify(index) + '\n';
-          ndjson += JSON.stringify(req) + '\n';
+          jsonArr.push(JSON.stringify(index));
+          jsonArr.push(JSON.stringify(req));
           // This third request is for documents that had its begin during or before the time range, but
           // its end was after the time range.
           indexjson = '{"index": "' + getIndexBaseName() + 'metric_data' + '" }\n';
@@ -1859,8 +1916,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}';
           index = JSON.parse(indexjson);
           req = JSON.parse(reqjson);
-          ndjson += JSON.stringify(index) + '\n';
-          ndjson += JSON.stringify(req) + '\n';
+          jsonArr.push(JSON.stringify(index));
+          jsonArr.push(JSON.stringify(req));
           // This fourth request is for documents that had its begin before the time range, but
           //  its end was during or after the time range
           var indexjson = '{"index": "' + getIndexBaseName() + 'metric_data' + '" }\n';
@@ -1879,8 +1936,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           reqjson += '}\n';
           index = JSON.parse(indexjson);
           req = JSON.parse(reqjson);
-          ndjson += JSON.stringify(index) + '\n'; //ensures JSON is exactly 1 line
-          ndjson += JSON.stringify(req) + '\n'; //ensures JSON is exactly 1 line
+          jsonArr.push(JSON.stringify(index));
+          jsonArr.push(JSON.stringify(req));
 
           // Cycle through every "slice" of the time domain, adding the requests for the entire time domain
           thisBegin = thisEnd + 1;
@@ -1895,9 +1952,8 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
       });
   }
 
-  var resp = esRequest(url, 'metric_data/_msearch', ndjson);
-  var data = JSON.parse(resp.getBody());
-  var elements = data.responses.length;
+  var responses = esJsonArrRequest(url, 'metric_data/_msearch', jsonArr);
+  var elements = responses.length;
 
   var valueSets = [];
   var count = 0;
@@ -1928,14 +1984,14 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           var aggWeight;
           var aggAvgTimesWeight;
           var newWeight;
-          aggAvg = data.responses[count].aggregations.metric_avg.value; //$$resp_ref{'responses'}[$count]{'aggregations'}{'metric_avg'}{'value'};
+          aggAvg = responses[count].aggregations.metric_avg.value; //$$resp_ref{'responses'}[$count]{'aggregations'}{'metric_avg'}{'value'};
           if (typeof aggAvg != 'undefined') {
             // We have the weighted average for documents that don't overlap the time range,
             // but we need to combine that with the documents that are partially outside
             // the time range.  We need to know the total weight from the documents we
             // just finished in order to add the new documents and recompute the new weighted
             // average.
-            aggWeight = data.responses[count + 1].aggregations.total_weight.value;
+            aggWeight = responses[count + 1].aggregations.total_weight.value;
             aggAvgTimesWeight = aggAvg * aggWeight;
           } else {
             // It is possible that the aggregation returned no results because all of the documents
@@ -1968,20 +2024,20 @@ getMetricDataFromIdsSets = function (url, sets, metricGroupIdsByLabelSets) {
           var k;
           for (k = 2; k < 4; k++) {
             //for my $j (@{ $$resp_ref{'responses'}[$count + $k]{'hits'}{'hits'} }) {
-            if (data.responses[count + k].hits.total.value !== data.responses[count + k].hits.hits.length) {
+            if (responses[count + k].hits.total.value !== responses[count + k].hits.hits.length) {
               console.log(
-                'WARNING! getMetricDataFromIdsSets() data.responses[' +
+                'WARNING! getMetricDataFromIdsSets() responses[' +
                   (count + k) +
                   '].hits.total.value (' +
-                  data.responses[count + k].hits.total.value +
-                  ') and data.responses[' +
+                  responses[count + k].hits.total.value +
+                  ') and responses[' +
                   (count + k) +
                   '].hits.hits.length (' +
-                  data.responses[count + k].hits.hits.length +
+                  responses[count + k].hits.hits.length +
                   ') are not equal, which means the retured data is probably incomplete'
               );
             }
-            data.responses[count + k].hits.hits.forEach((element) => {
+            responses[count + k].hits.hits.forEach((element) => {
               //for my $key (keys %{ $$j{'_source'}{'metric_data'} }) {
               partialDocs[element._id] = {};
               Object.keys(element._source.metric_data).forEach((key) => {
@@ -2064,6 +2120,7 @@ exports.getMetricData = getMetricData;
 //   *if* the metric is from a benchmark.  If you want to query for corresponding
 //   tool data, use the same begin and end as the benchmark-iteration-sample-period.
 getMetricDataSets = function (url, sets) {
+  console.log("sets:\n" + JSON.stringify(sets, null, 2));
   for (var i = 0; i < sets.length; i++) {
     // If a begin and end are not defined, get it from the period.begin & period.end.
     // If a begin and/or end are not defined, and the period is not defined, error out.
