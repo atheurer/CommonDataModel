@@ -64,7 +64,7 @@ exports.intersectAllArrays = intersectAllArrays;
 
 function esJsonArrRequest(host, idx, jsonArr) {
   var url = 'http://' + host + '/' + getIndexBaseName() + idx;
-  var max = 4096;
+  var max = 16384;
   var idx = 0;
   var req_count = 0;
   var q_count = 0;
@@ -1653,7 +1653,7 @@ mgetMetricIdsFromTerms = function (url, termsSets) {
         totalReqs++;
       });
   }
-  console.log("jsonArr.length: " + jsonArr.length);
+  //console.log("jsonArr.length: " + jsonArr.length);
   var responses = esJsonArrRequest(url, 'metric_desc/_msearch', jsonArr);
   if (totalReqs != responses.length) {
     console.log('mgetMetricIdsFromTerms(): ERROR, number of _msearch responses (' + responses.length + ') did not match number of requests (' + totalReqs + ')');
@@ -2120,7 +2120,7 @@ exports.getMetricData = getMetricData;
 //   *if* the metric is from a benchmark.  If you want to query for corresponding
 //   tool data, use the same begin and end as the benchmark-iteration-sample-period.
 getMetricDataSets = function (url, sets) {
-  console.log("sets:\n" + JSON.stringify(sets, null, 2));
+  //console.log("sets:\n" + JSON.stringify(sets, null, 2));
   for (var i = 0; i < sets.length; i++) {
     // If a begin and end are not defined, get it from the period.begin & period.end.
     // If a begin and/or end are not defined, and the period is not defined, error out.
