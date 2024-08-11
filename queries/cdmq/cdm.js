@@ -1,5 +1,6 @@
 //# vim: autoindent tabstop=2 shiftwidth=2 expandtab softtabstop=2 filetype=javascript
 var request = require('sync-request');
+var thenRequest = require('then-request');
 var bigQuerySize = 262144;
 
 function getIndexBaseName() {
@@ -119,17 +120,44 @@ function esJsonArrRequest(host, idx, jsonArr) {
 }
 
 function esRequest(host, idx, q) {
-  var url = 'http://' + host + '/' + getIndexBaseName() + idx;
-  // The var q can be an object or a string.  If you are submitting NDJSON
-  // for a _msearch, it must be a [multi-line] string.
-  if (typeof q === 'object') {
-    q = JSON.stringify(q);
-  }
-  var resp = request('POST', url, {
-    body: q,
-    headers: { 'Content-Type': 'application/json' }
+  return new Promise((resolve, reject) => {
+
+    var url = 'http://' + host + '/' + getIndexBaseName() + idx;
+    console.log("esRequest() url:" + url + "q:" + JSON.stringify(q, null, 2));
+    // The var q can be an object or a string.  If you are submitting NDJSON
+    // for a _msearch, it must be a [multi-line] string.
+    if (typeof q === 'object') {
+      q = JSON.stringify(q);
+    }
+    var http = require('http');
+
+    const options = {
+        body: q,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      };
+
+    var req = http.request(url, options, function(res) {
+      var chunks = [];
+
+      res.on("data", function (chunk) {
+            chunks.push(chunk);
+      });
+
+      res.on("end", function () {
+
+        var body = Buffer.concat(chunks);
+        var response = JSON.parse(body);
+        //console.log("response: " + JSON.stringify(response, null, 2));
+
+        //
+        // Here you RESOLVE promise result
+        resolve(response);
+        return response;
+      });
+    });
+    req.end();
   });
-  return resp;
 }
 
 // mSearch: take a several serach requests and create a ES _msearch
@@ -1492,7 +1520,7 @@ getIters = function (
 };
 exports.getIters = getIters;
 
-exports.getMetricSources = function (url, runId) {
+exports.getMetricSources = async function (url, runId) {
   var q = {
     query: { bool: { filter: [{ term: { 'run.id': runId } }] } },
     aggs: {
@@ -1501,13 +1529,15 @@ exports.getMetricSources = function (url, runId) {
     size: 0
   };
   //console.log("Q:\n" + JSON.stringify(q, null, 2));
-  var resp = esRequest(url, 'metric_desc/_search', q);
+  var resp = await esRequest(url, 'metric_desc/_search', q);
+  console.log("getMetricSource() resp: " + JSON.stringify(resp, null, 2));
   var data = JSON.parse(resp.getBody());
   if (Array.isArray(data.aggregations.source.buckets)) {
     var sources = [];
     data.aggregations.source.buckets.forEach((element) => {
       sources.push(element.key);
     });
+    console.log("returning metric sources");
     return sources;
   }
 };
