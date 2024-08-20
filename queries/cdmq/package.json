@@ -9,6 +9,7 @@
   "author": "Andrew Theurer",
   "license": "ISC",
   "dependencies": {
+    "cli-table": "^0.3.11",
     "commander": "^2.20.3",
     "sprintf-js": "^1.1.2",
     "sync-request": "^6.1.0"

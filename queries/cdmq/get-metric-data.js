@@ -12,16 +12,41 @@
 var cdm = require('./cdm');
 var program = require('commander');
 var sprintf = require('sprintf-js').sprintf;
+var Table = require('cli-table');
 
 function list(val) {
   return val.split(',');
+}
+
+function get_mean_stddevpct(data, key) {
+    var num_samples = data.length;
+    var sum = 0;
+    var diff = 0;
+    if (num_samples > 1) {
+        for (i = 0; i < num_samples; i++) {
+            val = data[i].values[key][0].value  // key[0] assumes a resolution of 1
+            sum += val;  // key[0] assumes a resolution of 1
+        }
+        var mean = sum / num_samples;
+        for (i = 0; i < num_samples; i++) {
+            val = data[i].values[key][0].value  // key[0] assumes a resolution of 1
+            diff += (mean - val) * (mean - val);
+        }
+        diff /= num_samples - 1;
+        var stddev = Math.sqrt(diff);
+        var stddevpct = (100 * stddev) / mean;
+        return [mean.toFixed(program.decimalPlaces), stddevpct.toFixed(program.decimalPlaces)];
+    }
+    else {
+        return [data[0].values[key][0].value.toFixed(program.decimalPlaces), '-'];
+    }
 }
 
 program
   .version('0.1.0')
   .option('--url <host:port>', 'The host and port of the OpenSearch instance', 'localhost:9200')
   .option('--run <uuid>', 'The UUID from the run')
-  .option('--period <uuid>', 'The UUID from the benchmark-iteration-sample-period')
+  .option('--period <uuid>', 'The UUID from the benchmark-iteration-sample-period', list, [])
   .option('--source <name>', 'The metric source, like a tool or benchmark name (sar, fio)')
   .option('--type <name>', 'The metric type, like Gbps or IOPS')
   .option(
@@ -67,164 +92,278 @@ program
   )
   .parse(process.argv);
 
-metric_data = cdm.getMetricData(
-  program.url,
-  program.run,
-  program.period,
-  program.source,
-  program.type,
-  program.begin,
-  program.end,
-  program.resolution,
-  program.breakout,
-  program.filter
-);
+var sets = [];
 
-if (Object.keys(metric_data.values).length == 0) {
-  console.log('There were no metrics found, exiting');
-  process.exit(1);
+if (program.period.length > 1) {
+    console.log("found multiple periods");
+    // Only when specifying multiple periods for --period,
+    // a set of N get metric data queries will be made with
+    // all other input used for every period.  Options
+    // --begin, --end, --resolution, and --filter will be ignored.
+    //
+    // Output will include min, max, avg, stddev, and stddevpct
+    for (i = 0; i < program.period.length; i++) {
+        var set = {
+        run: program.run,
+        period: program.period[i],
+        source: program.source,
+        type: program.type,
+        resolution: 1,
+        breakout: program.breakout }
+        sets.push(set);
+    }
+} else {
+    console.log("found 1 period");
+    var set = {
+    run: program.run,
+    period: program.period[0],
+    source: program.source,
+    type: program.type,
+    resolution: program.resolution,
+    breakout: program.breakout,
+    //begin: program.begin,
+    //end: program.end,
+    filter: program.filter,
+    resolution: program.resolution }
+    sets.push(set);
+}
+console.log("about to call getMetricDataSets() with: " + JSON.stringify(sets, null, 2));
+
+metric_data_sets = cdm.getMetricDataSets(program.url, sets)
+
+var num_metrics = 0;
+for (i = 0; i < metric_data_sets.length; i++) {
+  if (Object.keys(metric_data_sets[i].values).length == 0) {
+    console.log('There were no metrics found, for period ' + metric_data_sets[i].period);
+  }
+  num_metrics += Object.keys(metric_data_sets[i].values).length;
 }
 
 if (program.outputFormat == 'json') {
-  console.log(JSON.stringify(metric_data, null, 2));
+  console.log("metric-data-sets:\n", JSON.stringify(metric_data_sets, null, 2));
   process.exit(0);
 }
 
-// Rest of the code is for non-JSON output formats
-console.log('Available breakouts:  ' + metric_data.remainingBreakouts + '\n');
-var dataColumnLengths = [];
-var labelColumnLengths = [];
-var dataStartRow;
-if (program.dateFormat == 'epoch_ms') {
-  dataStartRow = 1;
-  program.timestampRows = 1;
-} else {
-  dataStartRow = parseInt(program.timestampRows); // rows 0-[1|2] are used for labels (timestamps)
-}
-var labelStopRow = dataStartRow - 1;
-var row = dataStartRow;
-var vals = [];
-vals[0] = [];
-var labels = [];
-beginMarker = ' ';
-endMarker = '';
 
-Object.keys(metric_data.values)
-  .sort((a, b) => {
-    return a.localeCompare(b, undefined, {
-      numeric: true,
-      sensitivity: 'base'
+var table = new Table();
+
+var empty_outline = { 'top': '' , 'top-mid': '' , 'top-left': '' , 'top-right': ''
+         , 'bottom': '' , 'bottom-mid': '' , 'bottom-left': '' , 'bottom-right': ''
+         , 'left': '' , 'left-mid': '' , 'mid': '' , 'mid-mid': ''
+         , 'right': '' , 'right-mid': '' , 'middle': ' ' };
+
+var empty_style = { 'padding-left': 0, 'padding-right': 0 };
+
+// overall table houses two sub-tables:
+//  the left column houses the metric naming
+//  the right column houses the values
+//  each row is a subtable of a sspecific metric source::type and breakout on the left column,
+//  and a value plus stddevpct, min, and max if there are multiple periods for this metric query
+var table1 = new Table({ chars: empty_outline, style: empty_style, colAligns: ['left', 'right'] });
+
+var num_samples = metric_data_sets.length;
+var num_metrics = Object.keys(metric_data_sets[0].values); // TODO: make sure all metric_data_sets[n].values have same number of keys
+var used_breakouts = metric_data_sets[0].usedBreakouts;
+// get the list of metric names, like:
+// [ <rx>-<physical>,  <rx>-<virtual>, <tx>-<physical>, <tx>-<virtual>]
+var metric_names = Object.keys(metric_data_sets[0].values)
+    .sort((a, b) => {
+      return a.localeCompare(b, undefined, {
+        numeric: true,
+        sensitivity: 'base'
+      });
     });
-  })
-  .forEach((key) => {
-    labels[row] = [];
-    labels[row][0] = program.source;
-    labels[row][1] = program.type;
-    var subKeys = key.replace(/^</, '').replace(/>$/, '').split('>-<'); // key is the string with breakouts, for example,  "client-2-10" for <cstype>-<csid>-<num> for source: mpstat type: Busy-CPU
+
+// For each metric_name, output the labels (left col in main table)xi
+// and the data (right col in the main table)
+
+// First populate the left header with "usedBreakouts"
+var this_head = [program.source + "::" + program.type]
+var this_colAligns = ['left'];
+metric_data_sets[0].usedBreakouts.forEach((subMetric) => {
+            this_head.push(subMetric);
+            this_colAligns.push('left');
+          });
+var tableL = new Table({
+        /* chars: almost_empty_outline,*/ style: empty_style,
+        head: this_head,
+        colAligns: this_colAligns
+    });
+
+var tableR = new Table({
+    /* chars: outline_missing_left, */ style: empty_style,
+    head: ['value', 'stddevpct'],
+    colAligns: ['right']
+});
+
+//console.log("metric_names: " + metric_names);
+// Now populate the left and right tables, left with
+// the the specific metric and right with the value
+for (k = 0; k < metric_names.length; k++) {
+    // key is the string with breakouts, for example:
+    // "client-2-10" for <cstype>-<csid>-<num>
+    // for source: mpstat type: Busy-CPU
+    var key = metric_names[k];
+    //console.log("key: " + key);
+    // split this key into labels, where each label is a col in the subtable
+    // The first column will be the metric_source::metric_type
+    var subKeys = key.replace(/^</, '').replace(/>$/, '').split('>-<');
     if (subKeys.length == 1 && subKeys[0] == '') {
-      subKeys = [];
+        subKeys = [];
     }
-    var col = 2; // colDataStart
-    if (row == dataStartRow) {
-      // populate the header rows now
-      // first two columns are metric source and type
-      labels[0] = [];
-      if (program.timestampRows == 2) {
-        labels[1] = [];
-        labels[0][0] = '';
-        labels[0][1] = '';
-        labels[1][0] = 'source';
-        labels[1][1] = 'type';
-        metric_data.usedBreakouts.forEach((subMetric) => {
-          labels[0][col] = '';
-          labels[1][col] = subMetric;
-          col++;
-        });
-      } else {
-        labels[0][0] = 'source';
-        labels[0][1] = 'type';
-        metric_data.usedBreakouts.forEach((subMetric) => {
-          labels[0][col] = subMetric;
-          col++;
-        });
-      }
-    }
-    // populate the label array with subMetrics
-    labels[row] = [];
-    labels[row][0] = program.source;
-    labels[row][1] = program.type;
-    var col = 2;
-    subKeys.forEach((subKey) => {
-      var subMetric = subKey.replace(/<(\w+)>/, '$1');
-      i;
-      labels[row][col] = subMetric;
-      col++;
-    });
-    var values_string = '';
-    vals[row] = [];
-    col = 0;
-    metric_data.values[key].forEach((element) => {
-      if (row == dataStartRow) {
-        if (col == 0) {
-          vals[0] = [];
-        }
-        var date = new Date(element.end);
-        if (program.dateFormat == 'epoch_ms') {
-          vals[0][col] = sprintf('%d', element.end);
-        } else if (program.timestampRows == 2) {
-          if (col == 0) {
-            vals[1] = [];
-          }
-          vals[0][col] =
-            sprintf('%02d', date.getUTCDate()) +
-            '-' +
-            sprintf('%02d', date.getUTCMonth() + 1) +
-            '-' +
-            sprintf('%04d', date.getUTCFullYear());
-          vals[1][col] =
-            sprintf('%02d', date.getUTCHours()) +
-            ':' +
-            sprintf('%02d', date.getUTCMinutes()) +
-            ':' +
-            sprintf('%02d', date.getUTCSeconds());
-        } else {
-          vals[0][col] =
-            sprintf('%02d', date.getUTCDate()) +
-            '-' +
-            sprintf('%02d', date.getUTCMonth() + 1) +
-            '-' +
-            sprintf('%04d', date.getUTCFullYear()) +
-            '/' +
-            sprintf('%02d', date.getUTCHours()) +
-            ':' +
-            sprintf('%02d', date.getUTCMinutes()) +
-            ':' +
-            sprintf('%02d', date.getUTCSeconds());
-        }
-      }
-      vals[row][col] = element.value.toFixed(program.decimalPlaces);
-      col++;
-    });
-    row++;
-  });
-
-// Adjust column widths according to longest string per column
-// (this should become a function)
-for (row = 0; row < vals.length; row++) {
-  for (col = 0; col < vals[row].length; col++) {
-    var length = vals[row][col].length;
-    if (dataColumnLengths[col] == null || dataColumnLengths[col] < length) {
-      dataColumnLengths[col] = length;
-    }
-  }
+    tableL.push(['', ...subKeys]);
+    //The below assumes a resolution of 1
+    //console.log("value:\n" + JSON.stringify(data[0].values[key][0].value, null, 2));
+    //tableR.push([data[0].values[key][0].value, '']);
+    //console.log("get_mean_stddevpct():\n" + JSON.stringify(get_mean_stddevpct(data, key), null, 2));
+    tableR.push(get_mean_stddevpct(metric_data_sets, key));
+    var num_cols = 1 + subKeys.length;
 }
-for (row = 0; row < labels.length; row++) {
-  for (col = 0; col < labels[row].length; col++) {
-    var length = labels[row][col].length;
-    if (labelColumnLengths[col] == null || labelColumnLengths[col] < length) {
-      labelColumnLengths[col] = length;
+
+table1.push([tableL.toString(), tableR.toString()]);
+console.log(table1.toString());
+
+/*
+for (i = 0; i <metric_data_sets.length; i++) {
+//for (i = 0; i < 1; i++) {
+
+  // Rest of the code is for non-JSON output formats
+  console.log('Available breakouts:  ' + metric_data_sets[i].remainingBreakouts + '\n');
+  var dataColumnLengths = [];
+  var labelColumnLengths = [];
+  var dataStartRow;
+  if (program.dateFormat == 'epoch_ms') {
+    dataStartRow = 1;
+    program.timestampRows = 1;
+  } else {
+    dataStartRow = parseInt(program.timestampRows); // rows 0-[1|2] are used for labels (timestamps)
+  }
+  var labelStopRow = dataStartRow - 1;
+  var row = dataStartRow;
+  var vals = [];
+  vals[0] = [];
+  var labels = [];
+  beginMarker = ' ';
+  endMarker = '';
+
+  Object.keys(metric_data_sets[i].values)
+    .sort((a, b) => {
+      return a.localeCompare(b, undefined, {
+        numeric: true,
+        sensitivity: 'base'
+      });
+    })
+    .forEach((key) => {
+      labels[row] = [];
+      labels[row][0] = program.source;
+      labels[row][1] = program.type;
+      var subKeys = key.replace(/^</, '').replace(/>$/, '').split('>-<'); // key is the string with breakouts, for example,  "client-2-10" for <cstype>-<csid>-<num> for source: mpstat type: Busy-CPU
+      if (subKeys.length == 1 && subKeys[0] == '') {
+        subKeys = [];
+      }
+      var col = 2; // colDataStart
+      if (row == dataStartRow) {
+        // populate the header rows now
+        // first two columns are metric source and type
+        labels[0] = [];
+        if (program.timestampRows == 2) {
+          labels[1] = [];
+          labels[0][0] = '';
+          labels[0][1] = '';
+          labels[1][0] = 'source';
+          labels[1][1] = 'type';
+          metric_data_sets[i].usedBreakouts.forEach((subMetric) => {
+            labels[0][col] = '';
+            labels[1][col] = subMetric;
+            col++;
+          });
+        } else {
+          labels[0][0] = 'source';
+          labels[0][1] = 'type';
+          metric_data_sets[i].usedBreakouts.forEach((subMetric) => {
+            labels[0][col] = subMetric;
+            col++;
+          });
+        }
+      }
+      // populate the label array with subMetrics
+      labels[row] = [];
+      labels[row][0] = program.source;
+      labels[row][1] = program.type;
+      var col = 2;
+      subKeys.forEach((subKey) => {
+        var subMetric = subKey.replace(/<(\w+)>/, '$1');
+        i;
+        labels[row][col] = subMetric;
+        col++;
+      });
+      var values_string = '';
+      vals[row] = [];
+      col = 0;
+      metric_data_sets[i].values[key].forEach((element) => {
+        if (row == dataStartRow) {
+          if (col == 0) {
+            vals[0] = [];
+          }
+          var date = new Date(element.end);
+          if (program.dateFormat == 'epoch_ms') {
+            vals[0][col] = sprintf('%d', element.end);
+          } else if (program.timestampRows == 2) {
+            if (col == 0) {
+              vals[1] = [];
+            }
+            vals[0][col] =
+              sprintf('%02d', date.getUTCDate()) +
+              '-' +
+              sprintf('%02d', date.getUTCMonth() + 1) +
+              '-' +
+              sprintf('%04d', date.getUTCFullYear());
+            vals[1][col] =
+              sprintf('%02d', date.getUTCHours()) +
+              ':' +
+              sprintf('%02d', date.getUTCMinutes()) +
+              ':' +
+              sprintf('%02d', date.getUTCSeconds());
+          } else {
+            vals[0][col] =
+              sprintf('%02d', date.getUTCDate()) +
+              '-' +
+              sprintf('%02d', date.getUTCMonth() + 1) +
+              '-' +
+              sprintf('%04d', date.getUTCFullYear()) +
+              '/' +
+              sprintf('%02d', date.getUTCHours()) +
+              ':' +
+              sprintf('%02d', date.getUTCMinutes()) +
+              ':' +
+              sprintf('%02d', date.getUTCSeconds());
+          }
+        }
+        vals[row][col] = element.value.toFixed(program.decimalPlaces);
+        col++;
+      });
+      row++;
+    });
+
+  // Adjust column widths according to longest string per column
+  // (this should become a function)
+  for (row = 0; row < vals.length; row++) {
+    for (col = 0; col < vals[row].length; col++) {
+      var length = vals[row][col].length;
+      if (dataColumnLengths[col] == null || dataColumnLengths[col] < length) {
+        dataColumnLengths[col] = length;
+      }
     }
   }
+  for (row = 0; row < labels.length; row++) {
+    for (col = 0; col < labels[row].length; col++) {
+      var length = labels[row][col].length;
+      if (labelColumnLengths[col] == null || labelColumnLengths[col] < length) {
+        labelColumnLengths[col] = length;
+      }
+    }
+  }
+
 }
 
 rowStart = 0;
@@ -278,3 +417,4 @@ for (row = rowStart; row < rowEnd; row++) {
   }
   console.log(line);
 }
+*/
